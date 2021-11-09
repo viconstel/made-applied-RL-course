@@ -10,8 +10,9 @@ class Agent:
         
     def act(self, state):
         with torch.no_grad():
-            state = torch.tensor(np.array(state)).float()
-            return None # TODO
+            state = torch.tensor(np.array([state], dtype=float)).float()
+            action, _, _ = self.model.act(state)
+        return action.cpu().numpy()[0]
 
     def reset(self):
         pass

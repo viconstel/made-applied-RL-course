@@ -19,13 +19,15 @@ CRITIC_LR = 1e-4
 
 CLIP = 0.2
 ENTROPY_COEF = 1e-2
-BATCHES_PER_UPDATE = 64
-BATCH_SIZE = 64
+BATCHES_PER_UPDATE = 256
+BATCH_SIZE = 256
+HIDDEN_SIZE = 256
 
 MIN_TRANSITIONS_PER_UPDATE = 2048
-MIN_EPISODES_PER_UPDATE = 4
+MIN_EPISODES_PER_UPDATE = 10
 
-ITERATIONS = 1000
+ITERATIONS = 1500
+RANDOM_SEED = 12
 
     
 def compute_lambda_returns_and_gae(trajectory):
@@ -42,7 +44,6 @@ def compute_lambda_returns_and_gae(trajectory):
     
     # Each transition contains state, action, old action probability, value estimation and advantage estimation
     return [(s, a, p, v, adv) for (s, a, _, p, _), v, adv in zip(trajectory, reversed(lambda_returns), reversed(gae))]
-    
 
 
 class Actor(nn.Module):
@@ -50,17 +51,33 @@ class Actor(nn.Module):
         super().__init__()
         # Advice: use same log_sigma for all states to improve stability
         # You can do this by defining log_sigma as nn.Parameter(torch.zeros(...))
-        self.model = None
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.model = nn.Sequential(
+            nn.Linear(self.state_dim, 2 * HIDDEN_SIZE),
+            nn.ReLU(),
+            nn.Linear(2 * HIDDEN_SIZE, HIDDEN_SIZE),
+            nn.ReLU(),
+            nn.Linear(HIDDEN_SIZE, 2 * self.action_dim)
+        )
         self.sigma = None
         
     def compute_proba(self, state, action):
         # Returns probability of action according to current policy and distribution of actions
-        return None
+        mu, log_sigma = torch.chunk(self.model(state), 2, dim=-1)
+        sigma = torch.exp(log_sigma)
+        distribution = Normal(mu, sigma)
+        return distribution.log_prob(action).sum(-1)
         
     def act(self, state):
         # Returns an action (with tanh), not-transformed action (without tanh) and distribution of non-transformed actions
         # Remember: agent is not deterministic, sample actions from distribution (e.g. Gaussian)
-        return None
+        mu, log_sigma = torch.chunk(self.model(state), 2, dim=-1)
+        sigma = torch.exp(log_sigma)
+        distribution = Normal(mu, sigma)
+        action = distribution.sample()
+
+        return torch.tanh(action), action, distribution
         
         
 class Critic(nn.Module):
@@ -95,7 +112,6 @@ class PPO:
         advantage = np.array(advantage)
         advnatage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
         
-        
         for _ in range(BATCHES_PER_UPDATE):
             idx = np.random.randint(0, len(transitions), BATCH_SIZE) # Choose random batch
             s = torch.tensor(state[idx]).float()
@@ -104,10 +120,19 @@ class PPO:
             v = torch.tensor(target_value[idx]).float() # Estimated by lambda-returns 
             adv = torch.tensor(advantage[idx]).float() # Estimated by generalized advantage estimation 
             
-            # TODO: Update actor here            
-            # TODO: Update critic here
-            
-            
+            importance = torch.exp(self.actor.compute_proba(s, a) - op)
+            clipped_importance = torch.clamp(importance, 1 - CLIP, 1 + CLIP)
+            actor_loss = (-torch.min(importance * adv, clipped_importance * adv)).mean()
+            critic_loss = F.mse_loss(self.critic.get_value(s).flatten(), v)
+
+            self.actor_optim.zero_grad()
+            actor_loss.backward()
+            self.actor_optim.step()
+
+            self.critic_optim.zero_grad()
+            critic_loss.backward()
+            self.critic_optim.step()
+
     def get_value(self, state):
         with torch.no_grad():
             state = torch.tensor(np.array([state])).float()
@@ -151,9 +176,16 @@ def sample_episode(env, agent):
         s = ns
     return compute_lambda_returns_and_gae(trajectory)
 
+
 if __name__ == "__main__":
     env = make(ENV_NAME)
-    ppo = PPO(state_dim=env.observation_space.shape[0], action_dim=env.action_space.shape[0])
+    env.seed(RANDOM_SEED)
+    torch.manual_seed(RANDOM_SEED)
+    random.seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+
+    ppo = PPO(state_dim=env.observation_space.shape[0],
+              action_dim=env.action_space.shape[0])
     state = env.reset()
     episodes_sampled = 0
     steps_sampled = 0
