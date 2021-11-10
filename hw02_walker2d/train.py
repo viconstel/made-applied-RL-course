@@ -14,19 +14,19 @@ ENV_NAME = "Walker2DBulletEnv-v0"
 LAMBDA = 0.95
 GAMMA = 0.99
 
-ACTOR_LR = 2e-4
+ACTOR_LR = 5e-5
 CRITIC_LR = 1e-4
 
 CLIP = 0.2
 ENTROPY_COEF = 1e-2
-BATCHES_PER_UPDATE = 256
-BATCH_SIZE = 256
+BATCHES_PER_UPDATE = 128
+BATCH_SIZE = 512
 HIDDEN_SIZE = 256
 
-MIN_TRANSITIONS_PER_UPDATE = 2048
+MIN_TRANSITIONS_PER_UPDATE = 4086
 MIN_EPISODES_PER_UPDATE = 10
 
-ITERATIONS = 1500
+ITERATIONS = 1000
 RANDOM_SEED = 12
 
     
@@ -42,15 +42,17 @@ def compute_lambda_returns_and_gae(trajectory):
         lambda_returns.append(last_lr)
         gae.append(last_lr - v)
     
-    # Each transition contains state, action, old action probability, value estimation and advantage estimation
-    return [(s, a, p, v, adv) for (s, a, _, p, _), v, adv in zip(trajectory, reversed(lambda_returns), reversed(gae))]
+    # Each transition contains state, action, old action probability,
+    # value estimation and advantage estimation
+    zip_object = zip(trajectory, reversed(lambda_returns), reversed(gae))
+    return [(s, a, p, v, adv) for (s, a, _, p, _), v, adv in zip_object]
 
 
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
         super().__init__()
         # Advice: use same log_sigma for all states to improve stability
-        # You can do this by defining log_sigma as nn.Parameter(torch.zeros(...))
+        # Do this by defining log_sigma as nn.Parameter(torch.zeros(...))
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.model = nn.Sequential(
@@ -58,22 +60,25 @@ class Actor(nn.Module):
             nn.ReLU(),
             nn.Linear(2 * HIDDEN_SIZE, HIDDEN_SIZE),
             nn.ReLU(),
-            nn.Linear(HIDDEN_SIZE, 2 * self.action_dim)
+            nn.Linear(HIDDEN_SIZE, self.action_dim)
         )
-        self.sigma = None
+        self.sigma = nn.Parameter(torch.zeros(self.action_dim))
         
     def compute_proba(self, state, action):
-        # Returns probability of action according to current policy and distribution of actions
-        mu, log_sigma = torch.chunk(self.model(state), 2, dim=-1)
-        sigma = torch.exp(log_sigma)
+        # Returns probability of action according
+        # to current policy and distribution of actions
+        mu = self.model(state)
+        sigma = torch.exp(self.sigma)
         distribution = Normal(mu, sigma)
         return distribution.log_prob(action).sum(-1)
         
     def act(self, state):
-        # Returns an action (with tanh), not-transformed action (without tanh) and distribution of non-transformed actions
-        # Remember: agent is not deterministic, sample actions from distribution (e.g. Gaussian)
-        mu, log_sigma = torch.chunk(self.model(state), 2, dim=-1)
-        sigma = torch.exp(log_sigma)
+        # Returns an action (with tanh), not-transformed action (without tanh)
+        # and distribution of non-transformed actions
+        # Remember: agent is not deterministic,
+        # sample actions from distribution (e.g. Gaussian)
+        mu = self.model(state)
+        sigma = torch.exp(self.sigma)
         distribution = Normal(mu, sigma)
         action = distribution.sample()
 
@@ -103,26 +108,31 @@ class PPO:
         self.critic_optim = Adam(self.critic.parameters(), CRITIC_LR)
 
     def update(self, trajectories):
-        transitions = [t for traj in trajectories for t in traj] # Turn a list of trajectories into list of transitions
+        # Turn a list of trajectories into list of transitions
+        transitions = [t for traj in trajectories for t in traj]
         state, action, old_prob, target_value, advantage = zip(*transitions)
         state = np.array(state)
         action = np.array(action)
         old_prob = np.array(old_prob)
         target_value = np.array(target_value)
         advantage = np.array(advantage)
-        advnatage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+        advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
         
         for _ in range(BATCHES_PER_UPDATE):
-            idx = np.random.randint(0, len(transitions), BATCH_SIZE) # Choose random batch
+            # Choose random batch
+            idx = np.random.randint(0, len(transitions), BATCH_SIZE)
             s = torch.tensor(state[idx]).float()
             a = torch.tensor(action[idx]).float()
-            op = torch.tensor(old_prob[idx]).float() # Probability of the action in state s.t. old policy
-            v = torch.tensor(target_value[idx]).float() # Estimated by lambda-returns 
-            adv = torch.tensor(advantage[idx]).float() # Estimated by generalized advantage estimation 
-            
+            # Probability of the action in state s.t. old policy
+            op = torch.tensor(old_prob[idx]).float()
+            # Estimated by lambda-returns
+            v = torch.tensor(target_value[idx]).float()
+            # Estimated by generalized advantage estimation
+            adv = torch.tensor(advantage[idx]).float()
+
             importance = torch.exp(self.actor.compute_proba(s, a) - op)
             clipped_importance = torch.clamp(importance, 1 - CLIP, 1 + CLIP)
-            actor_loss = (-torch.min(importance * adv, clipped_importance * adv)).mean()
+            actor_loss = -1. * (torch.min(importance * adv, clipped_importance * adv).mean())
             critic_loss = F.mse_loss(self.critic.get_value(s).flatten(), v)
 
             self.actor_optim.zero_grad()
