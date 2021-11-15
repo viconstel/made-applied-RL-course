@@ -14,7 +14,7 @@ ENV_NAME = "Walker2DBulletEnv-v0"
 LAMBDA = 0.95
 GAMMA = 0.99
 
-ACTOR_LR = 5e-5
+ACTOR_LR = 2e-4
 CRITIC_LR = 1e-4
 
 CLIP = 0.2
@@ -23,7 +23,7 @@ BATCHES_PER_UPDATE = 128
 BATCH_SIZE = 512
 HIDDEN_SIZE = 256
 
-MIN_TRANSITIONS_PER_UPDATE = 4086
+MIN_TRANSITIONS_PER_UPDATE = 4096
 MIN_EPISODES_PER_UPDATE = 10
 
 ITERATIONS = 1000
@@ -70,7 +70,7 @@ class Actor(nn.Module):
         mu = self.model(state)
         sigma = torch.exp(self.sigma)
         distribution = Normal(mu, sigma)
-        return distribution.log_prob(action).sum(-1)
+        return torch.exp(distribution.log_prob(action).sum(-1))
         
     def act(self, state):
         # Returns an action (with tanh), not-transformed action (without tanh)
@@ -130,7 +130,7 @@ class PPO:
             # Estimated by generalized advantage estimation
             adv = torch.tensor(advantage[idx]).float()
 
-            importance = torch.exp(self.actor.compute_proba(s, a) - op)
+            importance = self.actor.compute_proba(s, a) / op
             clipped_importance = torch.clamp(importance, 1 - CLIP, 1 + CLIP)
             actor_loss = -1. * (torch.min(importance * adv, clipped_importance * adv).mean())
             critic_loss = F.mse_loss(self.critic.get_value(s).flatten(), v)
@@ -199,6 +199,7 @@ if __name__ == "__main__":
     state = env.reset()
     episodes_sampled = 0
     steps_sampled = 0
+    best_score = 0.
     
     for i in range(ITERATIONS):
         trajectories = []
@@ -217,3 +218,6 @@ if __name__ == "__main__":
             rewards = evaluate_policy(env, ppo, 5)
             print(f"Step: {i+1}, Reward mean: {np.mean(rewards)}, Reward std: {np.std(rewards)}, Episodes: {episodes_sampled}, Steps: {steps_sampled}")
             ppo.save()
+            if np.mean(rewards) > best_score:
+                best_score = np.mean(rewards)
+                torch.save(ppo.actor, "best.pkl")
