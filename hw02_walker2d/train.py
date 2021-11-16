@@ -70,7 +70,7 @@ class Actor(nn.Module):
         mu = self.model(state)
         sigma = torch.exp(self.sigma)
         distribution = Normal(mu, sigma)
-        return torch.exp(distribution.log_prob(action).sum(-1))
+        return torch.exp(distribution.log_prob(action).sum(-1)), distribution
         
     def act(self, state):
         # Returns an action (with tanh), not-transformed action (without tanh)
@@ -130,10 +130,12 @@ class PPO:
             # Estimated by generalized advantage estimation
             adv = torch.tensor(advantage[idx]).float()
 
-            importance = self.actor.compute_proba(s, a) / op
+            prob, dist = self.actor.compute_proba(s, a)
+            importance = prob / op
             clipped_importance = torch.clamp(importance, 1 - CLIP, 1 + CLIP)
             actor_loss = -1. * (torch.min(importance * adv, clipped_importance * adv).mean())
             critic_loss = F.mse_loss(self.critic.get_value(s).flatten(), v)
+            actor_loss = actor_loss - ENTROPY_COEF * dist.entropy().mean()
 
             self.actor_optim.zero_grad()
             actor_loss.backward()
