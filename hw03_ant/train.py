@@ -9,11 +9,12 @@ from torch.optim import Adam
 import random
 import copy
 
+
 GAMMA = 0.99
 TAU = 0.002
 CRITIC_LR = 5e-4
 ACTOR_LR = 2e-4
-DEVICE = "cuda"
+DEVICE = "cpu"
 BATCH_SIZE = 128
 ENV_NAME = "AntBulletEnv-v0"
 TRANSITIONS = 1000000
@@ -86,9 +87,38 @@ class TD3:
             done = torch.tensor(np.array(done), device=DEVICE, dtype=torch.float)
             
             # Update critic
-            
+            with torch.no_grad():
+                next_action = self.target_actor(next_state)
+                noise = eps * torch.randn_like(action)
+                next_action = torch.clamp(next_action + noise, -1, +1)
+
+                # Compute Q target values
+                target_q_1 = self.target_critic_1(next_state, next_action)
+                target_q_2 = self.target_critic_2(next_state, next_action)
+                q_target = torch.min(target_q_1, target_q_2)
+                q_target = reward + (1 - done) * GAMMA * q_target
+
+            # Update first critic
+            current_q_1 = self.critic_1(state, action)
+            critic_loss_1 = F.mse_loss(current_q_1, q_target)
+            self.critic_1_optim.zero_grad()
+            critic_loss_1.backward()
+            self.critic_1_optim.step()
+
+            # Update second critic
+            current_q_2 = self.critic_2(state, action)
+            critic_loss_2 = F.mse_loss(current_q_2, q_target)
+            self.critic_2_optim.zero_grad()
+            critic_loss_2.backward()
+            self.critic_2_optim.step()
+
             # Update actor
-            
+            actor_loss = -1 * self.critic_1(state, self.actor(state)).mean()
+            self.actor_optim.zero_grad()
+            actor_loss.backward()
+            self.actor_optim.step()
+
+            # Update target models
             soft_update(self.target_critic_1, self.critic_1)
             soft_update(self.target_critic_2, self.critic_2)
             soft_update(self.target_actor, self.actor)
@@ -130,6 +160,7 @@ if __name__ == "__main__":
     state = env.reset()
     episodes_sampled = 0
     steps_sampled = 0
+    best_score = 0.
     eps = 0.2
     
     for i in range(TRANSITIONS):
@@ -148,3 +179,7 @@ if __name__ == "__main__":
             rewards = evaluate_policy(test_env, td3, 5)
             print(f"Step: {i+1}, Reward mean: {np.mean(rewards)}, Reward std: {np.std(rewards)}")
             td3.save()
+
+            if np.mean(rewards) > best_score:
+                best_score = np.mean(rewards)
+                torch.save(td3.actor, "best.pkl")
